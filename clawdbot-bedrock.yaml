@@ -19,6 +19,10 @@ Metadata:
         Parameters:
           - CreateVPCEndpoints
           - AllowedSSHCIDR
+      - Label:
+          default: "Skills Configuration"
+        Parameters:
+          - CreateS3Bucket
 
 Parameters:
   OpenClawModel:
@@ -74,8 +78,17 @@ Parameters:
       - "true"
       - "false"
 
+  CreateS3Bucket:
+    Type: String
+    Default: "true"
+    Description: "Create S3 bucket for S3 Files Skill with pre-configured security settings"
+    AllowedValues:
+      - "true"
+      - "false"
+
 Conditions:
   CreateEndpoints: !Equals [!Ref CreateVPCEndpoints, "true"]
+  CreateS3Resources: !Equals [!Ref CreateS3Bucket, "true"]
   HasKeyPair: !Not [!Equals [!Ref KeyPairName, "none"]]
   AllowSSH: !And
     - !Not [!Equals [!Ref AllowedSSHCIDR, ""]]
@@ -111,6 +124,40 @@ Resources:
       Handle: !Ref OpenClawWaitHandle
       Timeout: '900'
       Count: 1
+
+  # ==================== S3 Bucket for Files Skill ====================
+  OpenClawFilesBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateS3Resources
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-openclaw-files"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldUploads
+            Status: Enabled
+            Prefix: uploads/
+            ExpirationInDays: 7
+            NoncurrentVersionExpirationInDays: 1
+          - Id: DeleteOldUploadPages
+            Status: Enabled
+            Prefix: upload-page-
+            ExpirationInDays: 1
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-files"
+        - Key: Purpose
+          Value: "OpenClaw S3 Files Skill"
 
   # ==================== VPC and Network ====================
   OpenClawVPC:
@@ -291,6 +338,23 @@ Resources:
                   - 'ssm:PutParameter'
                   - 'ssm:GetParameter'
                 Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/openclaw/${AWS::StackName}/*'
+        - !If
+          - CreateS3Resources
+          - PolicyName: S3FilesSkillPolicy
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - 's3:PutObject'
+                    - 's3:GetObject'
+                    - 's3:DeleteObject'
+                  Resource: !Sub '${OpenClawFilesBucket.Arn}/*'
+                - Effect: Allow
+                  Action:
+                    - 's3:ListBucket'
+                  Resource: !GetAtt OpenClawFilesBucket.Arn
+          - !Ref AWS::NoValue
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-instance-role"
@@ -748,3 +812,15 @@ Outputs:
   InstanceArchitecture:
     Description: "Instance architecture"
     Value: !FindInMap [ArchitectureMap, !Ref InstanceType, Arch]
+
+  S3BucketName:
+    Condition: CreateS3Resources
+    Description: "S3 bucket for S3 Files Skill (configure in skills/s3-files/config.json)"
+    Value: !Ref OpenClawFilesBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-S3FilesBucket"
+
+  S3BucketArn:
+    Condition: CreateS3Resources
+    Description: "ARN of S3 Files bucket"
+    Value: !GetAtt OpenClawFilesBucket.Arn
