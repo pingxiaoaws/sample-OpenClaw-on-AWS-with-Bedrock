@@ -40,7 +40,7 @@ RUN HOME=/root && mkdir -p /root/.openclaw && \
 
 # Find and copy templates so OpenClaw can find them from any cwd
 RUN mkdir -p /app/docs/reference && \
-    TEMPLATE_DIR=$(find /usr/local/lib/node_modules -path "*/openclaw/docs/reference/templates" -type d 2>/dev/null | head -1) && \
+    TEMPLATE_DIR=$(find /usr/lib/node_modules /usr/local/lib/node_modules -path "*/openclaw/docs/reference/templates" -type d 2>/dev/null | head -1) && \
     if [ -n "$TEMPLATE_DIR" ]; then cp -r "$TEMPLATE_DIR" /app/docs/reference/templates; \
     else echo "WARNING: templates not found, creating empty dir" && mkdir -p /app/docs/reference/templates; fi
 

@@ -32,7 +32,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 
-def get_tenant_roles(ssm, stack_name, tenant_id, region):
+def get_tenant_roles(ssm, stack_name, tenant_id):
     """Read tenant's role list from SSM permission profile."""
     try:
         resp = ssm.get_parameter(
@@ -256,7 +256,7 @@ def main():
     logger.info("=== Skill Loader START tenant=%s ===", args.tenant)
 
     # Get tenant roles for permission filtering
-    roles = get_tenant_roles(ssm, args.stack, args.tenant, args.region)
+    roles = get_tenant_roles(ssm, args.stack, args.tenant)
 
     # Layer 2: S3 hot-load skills
     l2 = load_layer2_skills(s3, args.bucket, args.stack, args.tenant, roles, args.workspace)
