@@ -29,13 +29,7 @@ const NAV: NavItem[] = [
       { label: 'Bindings & Routing', href: '/bindings' },
     ],
   },
-  {
-    label: 'Agent Factory', icon: <Bot size={20} />,
-    children: [
-      { label: 'All Agents', href: '/agents' },
-      { label: 'SOUL Editor', href: '/agents' },
-    ],
-  },
+  { label: 'Agent Factory', href: '/agents', icon: <Bot size={20} /> },
   { label: 'Workspace', href: '/workspace', icon: <FolderOpen size={20} /> },
   { label: 'Skill Market', href: '/skills', icon: <Puzzle size={20} /> },
   { label: 'Knowledge Base', href: '/knowledge', icon: <BookOpen size={20} /> },
