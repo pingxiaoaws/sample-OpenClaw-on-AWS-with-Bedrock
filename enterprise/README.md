@@ -86,6 +86,35 @@ State persists between sessions via S3 (workspace files, memory) and DynamoDB (u
 
 **OpenClaw Gateway runs inside each microVM** — enabling native session management, multi-turn memory compaction, and cross-session memory persistence. Zero modification to OpenClaw's source code.
 
+#### 2.1 Multi-Runtime Architecture (Defense in Depth)
+
+Different employee groups can be assigned to different AgentCore Runtimes, each backed by its own Docker image and IAM role. This creates **three independent layers of access control** — even if an agent is compromised at the prompt level, the IAM role at the infrastructure layer physically prevents unauthorized data access.
+
+```
+Runtime: Standard (Engineering / Sales / HR)
+  ├── Docker:  standard-agent:latest
+  │   └── Skills: web-search, jina-reader, deep-research, github-pr, slack
+  ├── Model:   Amazon Nova 2 Lite (cost-optimized)
+  └── IAM:     Own S3 workspace only · Own DynamoDB partition
+
+Runtime: Executive (C-Suite / Senior Leadership)
+  ├── Docker:  exec-agent:latest
+  │   └── Skills: ALL pre-installed (no S3 hot-load, faster cold start)
+  ├── Model:   Claude Sonnet 4.6 (highest capability)
+  └── IAM:     Full S3 access · Cross-department DynamoDB read · All Bedrock models
+```
+
+**Security layers:**
+
+| Layer | Mechanism | Can LLM bypass? |
+|-------|-----------|----------------|
+| L1 — Prompt | SOUL.md rules ("don't access finance data") | ⚠️ Possible via injection |
+| L2 — Application | Skills manifest `allowedRoles`/`blockedRoles` | ⚠️ Code bug risk |
+| **L3 — IAM** | **Runtime role has no permission on target resource** | **✅ Impossible** |
+| L4 — Network | VPC isolation between Runtimes | ✅ Infrastructure-level |
+
+The Tenant Router maps each employee's `position_id` to a Runtime ID, stored in DynamoDB `CONFIG#position-runtime-map`. Admin Console Settings → Runtimes tab lets IT Admin assign positions to Runtimes without code changes.
+
 #### 3. Enterprise-Grade Governance
 
 Every aspect of agent behavior is centrally managed and auditable:
