@@ -3200,6 +3200,81 @@ def _run_openclaw_channels() -> list:
         return []
 
 
+@app.get("/api/v1/admin/im-channel-connections")
+def get_im_channel_connections(authorization: str = Header(default="")):
+    """Per-channel employee connection table for admin management.
+    Returns all connected employees grouped by IM channel, with
+    session counts, first connected time, and last active timestamp."""
+    _require_role(authorization, roles=["admin"])
+    import boto3 as _b3icc
+    ssm = _b3icc.client("ssm", region_name="us-east-1")
+    prefix = _mapping_prefix()
+
+    # 1. Read all SSM user-mapping params (include LastModifiedDate for "connected since")
+    raw_params = []
+    try:
+        paginator = ssm.get_paginator("get_parameters_by_path")
+        for page in paginator.paginate(Path=prefix, Recursive=True):
+            raw_params.extend(page.get("Parameters", []))
+    except Exception as e:
+        print(f"[im-connections] SSM scan failed: {e}")
+
+    # 2. Employee lookup
+    emps = db.get_employees()
+    emp_map = {e["id"]: e for e in emps}
+
+    # 3. Session counts + last active from audit log
+    audit = db.get_audit_entries(limit=2000)
+    session_counts: dict = {}
+    last_active: dict = {}
+    for a in audit:
+        eid = a.get("actorId", "")
+        if not eid:
+            continue
+        if a.get("eventType") == "agent_invocation":
+            session_counts[eid] = session_counts.get(eid, 0) + 1
+            ts = a.get("timestamp", "")
+            if ts > last_active.get(eid, ""):
+                last_active[eid] = ts
+
+    # 4. Group by channel — only mappings with channel__ prefix
+    by_channel: dict = {}
+    for p in raw_params:
+        name = p["Name"].replace(prefix, "")
+        parts = name.split("__", 1)
+        if len(parts) != 2:
+            continue
+        channel, channel_user_id = parts
+        if channel in ("unknown", "unkn") or not channel_user_id:
+            continue
+
+        emp_id = p.get("Value", "")
+        emp = emp_map.get(emp_id)
+        if not emp:
+            # Try resolving via alternate ID formats
+            emp = next((e for e in emps if e.get("employeeNo") == emp_id), None)
+        if not emp:
+            continue
+
+        last_modified = p.get("LastModifiedDate")
+        connected_at = last_modified.isoformat() if hasattr(last_modified, "isoformat") else str(last_modified or "")
+
+        if channel not in by_channel:
+            by_channel[channel] = []
+        by_channel[channel].append({
+            "empId": emp_id,
+            "empName": emp.get("name", emp_id),
+            "positionName": emp.get("positionName", ""),
+            "departmentName": emp.get("departmentName", ""),
+            "channelUserId": channel_user_id,
+            "connectedAt": connected_at,
+            "sessionCount": session_counts.get(emp_id, 0),
+            "lastActive": last_active.get(emp_id, ""),
+        })
+
+    return {"connections": by_channel}
+
+
 @app.get("/api/v1/admin/im-channels")
 def get_im_channels(authorization: str = Header(default="")):
     """Get live IM channel status from Gateway + SSM mappings count per channel."""

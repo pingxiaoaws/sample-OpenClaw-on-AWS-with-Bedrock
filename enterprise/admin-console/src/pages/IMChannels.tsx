@@ -1,162 +1,268 @@
-import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { RefreshCw, Users, Settings, CheckCircle, XCircle, AlertCircle, ChevronRight } from 'lucide-react';
-import { Card, Badge, Button, PageHeader, StatCard } from '../components/ui';
+import { useState, useCallback } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import {
+  RefreshCw, Users, CheckCircle, XCircle, AlertCircle,
+  Trash2, MessageSquare, Clock, Activity, Wifi,
+} from 'lucide-react';
+import { Card, Badge, Button, PageHeader, StatCard, Tabs } from '../components/ui';
 import { api } from '../api/client';
 import { IM_ICONS } from '../components/IMIcons';
 
+// ─── Types ────────────────────────────────────────────────────────────────────
+
 interface IMChannel {
-  id: string;
-  label: string;
-  enterprise: boolean;
+  id: string; label: string; enterprise: boolean;
   status: 'connected' | 'configured' | 'not_connected';
-  connectedEmployees: number;
-  gatewayInfo: string;
+  connectedEmployees: number; gatewayInfo: string;
 }
 
-function StatusBadge({ status }: { status: IMChannel['status'] }) {
-  if (status === 'connected') return <Badge color="success" dot>Connected</Badge>;
-  if (status === 'configured') return <Badge color="warning" dot>Configured</Badge>;
-  return <Badge color="default">Not connected</Badge>;
+interface ChannelConnection {
+  empId: string; empName: string; positionName: string; departmentName: string;
+  channelUserId: string; connectedAt: string; sessionCount: number; lastActive: string;
 }
 
-function StatusIcon({ status }: { status: IMChannel['status'] }) {
-  if (status === 'connected') return <CheckCircle size={18} className="text-success" />;
-  if (status === 'configured') return <AlertCircle size={18} className="text-warning" />;
-  return <XCircle size={18} className="text-text-muted" />;
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+function timeAgo(iso: string): string {
+  if (!iso) return '—';
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
 }
 
-export default function IMChannels() {
-  const { data: channels = [], isLoading, refetch, isFetching } = useQuery<IMChannel[]>({
-    queryKey: ['im-channels'],
-    queryFn: () => api.get('/admin/im-channels'),
-    refetchInterval: 30_000,
+function shortDate(iso: string): string {
+  if (!iso) return '—';
+  try { return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: '2-digit' }); }
+  catch { return '—'; }
+}
+
+const CHANNEL_LABELS: Record<string, string> = {
+  telegram: 'Telegram', discord: 'Discord', feishu: 'Feishu / Lark',
+  slack: 'Slack', teams: 'Microsoft Teams', googlechat: 'Google Chat',
+  whatsapp: 'WhatsApp', wechat: 'WeChat',
+};
+
+const ENTERPRISE_CHANNELS = ['telegram', 'discord', 'feishu', 'slack', 'teams', 'googlechat'];
+
+// ─── Connection Row ───────────────────────────────────────────────────────────
+
+function ConnectionRow({ conn, channel, onRevoke, revoking }: {
+  conn: ChannelConnection; channel: string;
+  onRevoke: () => void; revoking: boolean;
+}) {
+  const [confirming, setConfirming] = useState(false);
+
+  return (
+    <tr className="border-b border-dark-border/30 hover:bg-dark-hover/20 transition-colors">
+      <td className="py-3 px-4">
+        <p className="text-sm font-medium text-text-primary">{conn.empName}</p>
+        <p className="text-xs text-text-muted">{conn.positionName} · {conn.departmentName}</p>
+      </td>
+      <td className="py-3 px-4">
+        <code className="text-xs font-mono text-text-secondary bg-dark-bg px-2 py-1 rounded">
+          {conn.channelUserId.length > 20 ? conn.channelUserId.slice(0, 18) + '…' : conn.channelUserId}
+        </code>
+      </td>
+      <td className="py-3 px-4 text-xs text-text-muted">{shortDate(conn.connectedAt)}</td>
+      <td className="py-3 px-4">
+        <div className="flex items-center gap-1.5">
+          <MessageSquare size={12} className="text-text-muted" />
+          <span className="text-sm font-medium text-text-primary">{conn.sessionCount || 0}</span>
+        </div>
+      </td>
+      <td className="py-3 px-4 text-xs text-text-muted">{timeAgo(conn.lastActive)}</td>
+      <td className="py-3 px-4">
+        {confirming ? (
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs text-danger">Disconnect?</span>
+            <Button variant="danger" size="sm" disabled={revoking}
+              onClick={() => { onRevoke(); setConfirming(false); }}>
+              {revoking ? <RefreshCw size={11} className="animate-spin" /> : 'Yes'}
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setConfirming(false)}>No</Button>
+          </div>
+        ) : (
+          <Button variant="ghost" size="sm"
+            className="text-text-muted hover:text-danger hover:border-danger/30"
+            onClick={() => setConfirming(true)}>
+            <Trash2 size={13} /> Disconnect
+          </Button>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+// ─── Channel Tab Content ──────────────────────────────────────────────────────
+
+function ChannelConnections({ channel, connections, channelStatus, onRevoke }: {
+  channel: string; connections: ChannelConnection[];
+  channelStatus?: IMChannel; onRevoke: (channelUserId: string) => void;
+}) {
+  const qc = useQueryClient();
+  const revokeMutation = useMutation({
+    mutationFn: ({ ch, uid }: { ch: string; uid: string }) =>
+      api.del(`/bindings/user-mappings?channel=${ch}&channelUserId=${uid}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['im-channel-connections'] });
+      qc.invalidateQueries({ queryKey: ['im-channels'] });
+    },
   });
 
-  const connected = channels.filter(c => c.status === 'connected');
-  const enterprise = channels.filter(c => c.enterprise);
+  const Icon = IM_ICONS[channel];
+  const label = CHANNEL_LABELS[channel] || channel;
+
+  return (
+    <div className="space-y-4">
+      {/* Channel header */}
+      <div className="flex items-center gap-4 rounded-xl border px-4 py-3 bg-surface-dim border-dark-border/50">
+        <div className="shrink-0">{Icon ? <Icon size={32} /> : <Wifi size={32} className="text-text-muted" />}</div>
+        <div className="flex-1">
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-semibold text-text-primary">{label} Bot</h3>
+            {channelStatus?.status === 'connected' && <Badge color="success" dot>Bot Active</Badge>}
+            {channelStatus?.status === 'configured' && <Badge color="warning" dot>Bot Configured</Badge>}
+            {(!channelStatus || channelStatus.status === 'not_connected') && <Badge color="default">Bot Not Connected</Badge>}
+          </div>
+          {channelStatus?.gatewayInfo && (
+            <p className="text-[10px] text-text-muted font-mono mt-0.5">{channelStatus.gatewayInfo}</p>
+          )}
+        </div>
+        <div className="text-right shrink-0">
+          <p className="text-2xl font-bold text-text-primary">{connections.length}</p>
+          <p className="text-xs text-text-muted">employees connected</p>
+        </div>
+      </div>
+
+      {/* Connections table */}
+      {connections.length === 0 ? (
+        <div className="rounded-xl bg-surface-dim border border-dark-border/30 py-12 text-center">
+          <Users size={28} className="mx-auto mb-3 text-text-muted opacity-40" />
+          <p className="text-sm text-text-muted">No employees connected via {label} yet</p>
+          <p className="text-xs text-text-muted mt-1">Employees connect from Portal → Connect IM</p>
+        </div>
+      ) : (
+        <Card className="p-0 overflow-hidden">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-dark-border/50 bg-surface-dim">
+                <th className="py-2.5 px-4 text-left text-xs font-medium text-text-muted uppercase tracking-wider">Employee</th>
+                <th className="py-2.5 px-4 text-left text-xs font-medium text-text-muted uppercase tracking-wider">Channel User ID</th>
+                <th className="py-2.5 px-4 text-left text-xs font-medium text-text-muted uppercase tracking-wider">Connected</th>
+                <th className="py-2.5 px-4 text-left text-xs font-medium text-text-muted uppercase tracking-wider">Sessions</th>
+                <th className="py-2.5 px-4 text-left text-xs font-medium text-text-muted uppercase tracking-wider">Last Active</th>
+                <th className="py-2.5 px-4 text-left text-xs font-medium text-text-muted uppercase tracking-wider">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {connections.map(conn => (
+                <ConnectionRow
+                  key={conn.channelUserId}
+                  conn={conn}
+                  channel={channel}
+                  revoking={revokeMutation.isPending}
+                  onRevoke={() => revokeMutation.mutate({ ch: channel, uid: conn.channelUserId })}
+                />
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ─── Main Page ────────────────────────────────────────────────────────────────
+
+export default function IMChannels() {
+  const qc = useQueryClient();
+  const [activeChannel, setActiveChannel] = useState('telegram');
+
+  const { data: channels = [], isLoading: channelsLoading, refetch, isFetching } = useQuery<IMChannel[]>({
+    queryKey: ['im-channels'],
+    queryFn: () => api.get('/admin/im-channels'),
+    refetchInterval: 60_000,
+  });
+
+  const { data: connectionsData, isLoading: connLoading, refetch: refetchConn } = useQuery<{
+    connections: Record<string, ChannelConnection[]>;
+  }>({
+    queryKey: ['im-channel-connections'],
+    queryFn: () => api.get('/admin/im-channel-connections'),
+    refetchInterval: 60_000,
+  });
+
+  const connections = connectionsData?.connections || {};
+  const channelStatusMap = Object.fromEntries(channels.map(c => [c.id, c]));
+
+  // Total stats
+  const totalConnected = Object.values(connections).reduce((s, arr) => s + arr.length, 0);
+  const activeChannels = Object.keys(connections).filter(ch => connections[ch].length > 0);
+  const totalSessions = Object.values(connections).flat().reduce((s, c) => s + (c.sessionCount || 0), 0);
+
+  // Build tabs — only enterprise channels
+  const tabs = ENTERPRISE_CHANNELS.map(ch => ({
+    id: ch,
+    label: CHANNEL_LABELS[ch] || ch,
+    count: connections[ch]?.length || 0,
+  }));
+
+  const handleRefresh = useCallback(() => {
+    refetch();
+    refetchConn();
+  }, [refetch, refetchConn]);
 
   return (
     <div>
       <PageHeader
         title="IM Channels"
-        description="Manage Gateway IM bot connections and monitor employee pairing status"
+        description="Monitor employee IM connections across all channels. Manage pairings and view session activity."
         actions={
-          <Button variant="default" size="sm" onClick={() => refetch()} disabled={isFetching}>
-            <RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} /> Refresh
+          <Button variant="default" size="sm" onClick={handleRefresh} disabled={isFetching || connLoading}>
+            <RefreshCw size={14} className={(isFetching || connLoading) ? 'animate-spin' : ''} /> Refresh
           </Button>
         }
       />
 
       {/* Stats */}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 mb-6">
-        <StatCard title="Connected" value={connected.length} subtitle={`of ${enterprise.length} enterprise channels`} icon={<CheckCircle size={22} />} color="success" />
-        <StatCard title="Paired Employees" value={channels.reduce((s, c) => s + c.connectedEmployees, 0)} subtitle="across all channels" icon={<Users size={22} />} color="primary" />
-        <StatCard title="Enterprise Channels" value={enterprise.length} subtitle="Telegram, Slack, Teams..." icon={<Settings size={22} />} color="info" />
-        <StatCard title="Personal (Disabled)" value={channels.filter(c => !c.enterprise).length} subtitle="WhatsApp, WeChat" icon={<XCircle size={22} />} color="info" />
+        <StatCard title="Paired Employees" value={totalConnected} subtitle="across all channels" icon={<Users size={22} />} color="primary" />
+        <StatCard title="Active Channels" value={activeChannels.length} subtitle="with at least 1 employee" icon={<CheckCircle size={22} />} color="success" />
+        <StatCard title="Total Sessions" value={totalSessions} subtitle="all-time invocations" icon={<Activity size={22} />} color="info" />
+        <StatCard title="Bot Connections" value={channels.filter(c => c.status === 'connected').length} subtitle={`of ${channels.filter(c => c.enterprise).length} enterprise bots`} icon={<Wifi size={22} />} color="cyan" />
       </div>
 
-      {/* Channel list */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        {/* Enterprise channels */}
-        <Card>
-          <h3 className="text-sm font-semibold text-text-primary mb-4 flex items-center gap-2">
-            <CheckCircle size={16} className="text-success" /> Enterprise Channels
-          </h3>
-          <div className="space-y-3">
-            {isLoading ? (
-              <div className="py-8 text-center text-text-muted text-sm">Loading...</div>
-            ) : (
-              channels.filter(c => c.enterprise).map(ch => {
-                const Icon = IM_ICONS[ch.id];
-                return (
-                  <div key={ch.id} className={`rounded-xl border px-4 py-3 flex items-center gap-3 transition-colors ${
-                    ch.status === 'connected' ? 'border-success/20 bg-success/5'
-                    : ch.status === 'configured' ? 'border-warning/20 bg-warning/5'
-                    : 'border-dark-border/40 bg-dark-bg'
-                  }`}>
-                    <div className="flex-shrink-0">
-                      {Icon ? <Icon size={28} /> : <div className="w-7 h-7 rounded-full bg-dark-hover" />}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-0.5">
-                        <span className="text-sm font-medium text-text-primary">{ch.label}</span>
-                        <StatusBadge status={ch.status} />
-                      </div>
-                      {ch.status === 'connected' && (
-                        <p className="text-xs text-text-muted">
-                          {ch.connectedEmployees} employee{ch.connectedEmployees !== 1 ? 's' : ''} paired
-                        </p>
-                      )}
-                      {ch.status === 'not_connected' && (
-                        <p className="text-xs text-text-muted">Bot not configured in Gateway</p>
-                      )}
-                      {ch.gatewayInfo && (
-                        <p className="text-[10px] text-text-muted font-mono mt-0.5 truncate">{ch.gatewayInfo}</p>
-                      )}
-                    </div>
-                    <StatusIcon status={ch.status} />
-                  </div>
-                );
-              })
-            )}
+      {/* Channel tabs */}
+      <Tabs
+        tabs={tabs}
+        activeTab={activeChannel}
+        onChange={setActiveChannel}
+      />
+
+      <div className="mt-6">
+        {connLoading ? (
+          <div className="flex justify-center py-16">
+            <RefreshCw size={24} className="animate-spin text-text-muted" />
           </div>
-        </Card>
+        ) : (
+          <ChannelConnections
+            key={activeChannel}
+            channel={activeChannel}
+            connections={connections[activeChannel] || []}
+            channelStatus={channelStatusMap[activeChannel]}
+            onRevoke={() => {}}
+          />
+        )}
+      </div>
 
-        {/* Right panel: How to connect + personal channels */}
-        <div className="space-y-4">
-          {/* How to add a channel */}
-          <Card>
-            <h3 className="text-sm font-semibold text-text-primary mb-3 flex items-center gap-2">
-              <Settings size={16} className="text-primary" /> How to Connect a New Channel
-            </h3>
-            <div className="space-y-3 text-xs text-text-secondary">
-              {[
-                { step: '1', label: 'Create a bot', detail: 'Telegram: @BotFather → /newbot · Slack: api.slack.com/apps · Teams: Azure Portal' },
-                { step: '2', label: 'Get the token', detail: 'Copy the bot token / app credentials from the platform dashboard' },
-                { step: '3', label: 'Add to Gateway', detail: 'SSH to EC2 → openclaw channels add --channel <name> --token <token>' },
-                { step: '4', label: 'Restart Gateway', detail: 'sudo systemctl restart openclaw-gateway' },
-                { step: '5', label: 'Verify here', detail: 'Refresh this page — status should show Connected' },
-              ].map(s => (
-                <div key={s.step} className="flex gap-3">
-                  <div className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-[10px] font-bold flex items-center justify-center">{s.step}</div>
-                  <div>
-                    <p className="font-medium text-text-primary">{s.label}</p>
-                    <p className="text-text-muted">{s.detail}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </Card>
-
-          {/* Personal channels (disabled) */}
-          <Card>
-            <h3 className="text-sm font-semibold text-text-muted mb-3 flex items-center gap-2">
-              <XCircle size={16} /> Personal Channels (Not for enterprise)
-            </h3>
-            <div className="space-y-2">
-              {channels.filter(c => !c.enterprise).map(ch => {
-                const Icon = IM_ICONS[ch.id];
-                return (
-                  <div key={ch.id} className="flex items-center gap-3 rounded-lg bg-dark-bg border border-dark-border/30 px-3 py-2 opacity-50">
-                    {Icon ? <Icon size={22} /> : null}
-                    <span className="text-sm text-text-muted">{ch.label}</span>
-                    <span className="ml-auto text-[10px] text-text-muted">Personal messaging — not enterprise-grade</span>
-                  </div>
-                );
-              })}
-            </div>
-          </Card>
-
-          {/* Pairing policy note */}
-          <div className="rounded-xl bg-info/5 border border-info/20 px-4 py-3 text-xs text-info flex items-start gap-2">
-            <ChevronRight size={14} className="mt-0.5 flex-shrink-0" />
-            <div>
-              <p className="font-medium mb-1">Auto-approve pairing is enabled</p>
-              <p className="text-info/80">Employees can self-service connect their IM via Portal → Connect IM. No admin approval needed. You can revoke anytime in Bindings → IM User Mappings.</p>
-            </div>
-          </div>
-        </div>
+      {/* Info footer */}
+      <div className="mt-6 rounded-xl bg-info/5 border border-info/20 px-4 py-3 text-xs text-info">
+        Employees connect via <strong>Portal → Connect IM</strong>. Disconnecting removes their SSM mapping — they can reconnect anytime by scanning again.
+        Employee-initiated disconnects are also available from their Portal.
       </div>
     </div>
   );
