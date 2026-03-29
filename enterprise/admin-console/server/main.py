@@ -5348,9 +5348,13 @@ def start_always_on_agent(agent_id: str, authorization: str = Header(default="")
             overrides={
                 "containerOverrides": [{
                     "name": "always-on-agent",
-                    "image": ecr_image,
+                    # "image" is not a valid containerOverrides field; image is set in task def
+                    # Use the task definition's image (or update the task def revision for custom tags)
                     "environment": [
-                        {"name": "SESSION_ID",         "value": f"shared__{agent_id}"},
+                        # For 1:1 employee agents: use personal__emp_id so entrypoint.sh
+                        # resolves BASE_TENANT_ID=emp_id → correct EFS/S3/SSM paths.
+                        # For shared N:1 agents: agent_id is the right anchor.
+                        {"name": "SESSION_ID",         "value": f"personal__{agent.get('employeeId', agent_id)}" if agent.get('employeeId') else f"shared__{agent_id}"},
                         {"name": "SHARED_AGENT_ID",    "value": agent_id},
                         {"name": "S3_BUCKET",          "value": bucket},
                         {"name": "STACK_NAME",         "value": stack},
@@ -5561,9 +5565,8 @@ def reload_always_on_agent(agent_id: str, body: dict, authorization: str = Heade
             }},
             overrides={"containerOverrides": [{
                 "name": "always-on-agent",
-                "image": ecr_image,
                 "environment": [
-                    {"name": "SESSION_ID",         "value": f"shared__{agent_id}"},
+                    {"name": "SESSION_ID",         "value": f"personal__{agent.get('employeeId', agent_id)}" if agent.get('employeeId') else f"shared__{agent_id}"},
                     {"name": "SHARED_AGENT_ID",    "value": agent_id},
                     {"name": "S3_BUCKET",          "value": bucket},
                     {"name": "STACK_NAME",         "value": stack},
@@ -5821,7 +5824,8 @@ def _launch_personal_always_on(emp_id: str, emp_name: str) -> dict:
             overrides={
                 "containerOverrides": [{
                     "name": "always-on-agent",
-                    "image": ecr_image,
+                    # "image" is not a valid containerOverrides field; image is set in task def
+                    # Use the task definition's image (or update the task def revision for custom tags)
                     "environment": [
                         # Note: SHARED_AGENT_ID deliberately NOT set → personal workspace path
                         {"name": "SESSION_ID",      "value": f"personal__{emp_id}"},
