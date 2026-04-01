@@ -377,6 +377,34 @@ Zero IT friction. Employees self-service in 30 seconds. Admins see all connectio
 | **Digital Twin** | Token-based access | Secure token in URL, stored in DynamoDB. Employee revokes instantly. View/chat counts tracked |
 | **L5 Guardrail** | AWS Bedrock Guardrails | Per-Runtime content policy. `apply_guardrail()` called on INPUT before forwarding to OpenClaw and on OUTPUT before returning to user. Standard Runtime: topic denial + PII. Exec Runtime: no guardrail. Every block logged to DynamoDB `guardrail_block` audit event. |
 
+## For AI Assistants (Kiro / Claude Code / Cursor / etc.)
+
+> **User:** Copy this section and paste it to your AI to get hands-on deployment help.
+
+---
+
+**What you're deploying:** A multi-tenant enterprise AI platform — one EC2 gateway serves the whole org, each employee gets an isolated Firecracker microVM agent via AWS Bedrock AgentCore. Two Docker images, two Runtimes (Standard + Executive), one DynamoDB table, one S3 bucket.
+
+**Run Docker builds on the gateway EC2, not the user's local machine.** After Step 1 creates the EC2, use SSM to build on it — the EC2 is ARM64 Graviton, has Docker pre-installed, and has fast internal network to ECR. Building ARM64 images locally via QEMU emulation is slow and error-prone. Use `enterprise/agent-container/build-on-ec2.sh` for the standard image; adapt the same pattern for exec-agent (Step 1.5).
+
+**Critical — these will silently break deployment if missed:**
+
+1. **openclaw is pinned to `2026.3.24`** in both Dockerfiles — do not upgrade. This is the last version with stable support for Chinese mainstream IM platforms (Feishu / DingTalk). Newer versions changed the Gateway response delivery mechanism in a way that breaks IM channel integration.
+2. **Build both Docker images** — `agent-container/` (standard) and `exec-agent/` (executive). Step 1.5 covers exec; don't skip it even if the user only needs standard agents initially.
+3. **Export two env vars before seed scripts** — run `export AWS_REGION=$REGION && export S3_BUCKET=$S3_BUCKET` before `seed_skills_final.py` and `seed_workspaces.py` (they read env vars, not CLI args).
+4. **Docker build takes 10–15 min** — `clawhub install` installs skills one by one. This is normal.
+5. **After `update-agent-runtime`**, poll until `status: READY` before testing.
+
+**Verify it works** (after Step 6):
+- Playground → Carol (Finance) → "run git status" → refused ✓
+- Playground → Wang Wu (SDE) → "run git status" → executes ✓
+- Playground → Sharon (Legal) → "有什么新的token要上线吗" → Guardrail blocks ✓
+- Playground → WJD (Executive) → same question → answers freely ✓
+
+**If AgentCore returns 500:** check CloudWatch group `/aws/bedrock-agentcore/runtimes/<runtime-id>-DEFAULT` for `openclaw returned empty output` — wrong openclaw version.
+
+---
+
 ## Quick Start
 
 ### Prerequisites
