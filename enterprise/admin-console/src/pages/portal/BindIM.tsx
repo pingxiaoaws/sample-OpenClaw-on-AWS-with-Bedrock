@@ -375,6 +375,8 @@ export default function BindIM() {
         {CHANNELS.map(ch => {
           const isConnected = connected.includes(ch.id);
           const isAvailable = adminConfigured.includes(ch.id);
+          // Stale: employee has an old binding but admin removed/never configured the bot
+          const isStale = isConnected && !isAvailable;
           return (
             <Card key={ch.id} className={`transition-all ${
               isAvailable ? 'cursor-pointer hover:border-primary/40' : 'opacity-60'
@@ -384,14 +386,40 @@ export default function BindIM() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-0.5 flex-wrap">
                     <h3 className="text-sm font-semibold text-text-primary">{ch.label}</h3>
-                    {isConnected && <Badge color="success" dot>Connected</Badge>}
-                    {!isAvailable && <Badge color="default">Admin not configured</Badge>}
+                    {isAvailable && isConnected && <Badge color="success" dot>Connected</Badge>}
+                    {isStale && <Badge color="warning">Bot removed</Badge>}
+                    {!isAvailable && !isConnected && <Badge color="default">Admin not configured</Badge>}
                   </div>
                   <p className="text-xs text-text-muted">
-                    {isAvailable ? (instructions[ch.id] || ch.description) : 'Contact your IT admin to enable this channel.'}
+                    {isStale
+                      ? 'This channel is no longer active. Contact IT admin or disconnect to clean up.'
+                      : isAvailable
+                        ? (instructions[ch.id] || ch.description)
+                        : 'Contact your IT admin to enable this channel.'}
                   </p>
                 </div>
               </div>
+              {/* Stale: show disconnect to clean up the dead binding */}
+              {isStale && (
+                <div className="mt-3">
+                  {confirmDisconnect === ch.id ? (
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-danger flex-1">Remove stale binding?</span>
+                      <Button variant="danger" size="sm" disabled={disconnecting === ch.id}
+                        onClick={() => handleDisconnect(ch.id)}>
+                        {disconnecting === ch.id ? <Loader2 size={12} className="animate-spin" /> : 'Confirm'}
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => setConfirmDisconnect(null)}>Cancel</Button>
+                    </div>
+                  ) : (
+                    <Button variant="ghost" size="sm" className="w-full text-text-muted text-xs"
+                      onClick={() => setConfirmDisconnect(ch.id)}>
+                      Remove binding
+                    </Button>
+                  )}
+                </div>
+              )}
+              {/* Normal: available channel — connect / reconnect / disconnect */}
               {isAvailable && (
                 <div className="mt-3 space-y-1.5">
                   {isConnected ? (
