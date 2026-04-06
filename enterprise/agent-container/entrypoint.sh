@@ -185,12 +185,25 @@ fi
 # `openclaw dashboard --no-open` outputs a URL with #token=xxx which is the
 # one-time pairing token. We extract and store it so the admin console can
 # construct the full URL for the employee.
-if [ "$GATEWAY_READY" = "true" ] && [ -n "${SHARED_AGENT_ID:-}" ]; then
+# Determine the agent ID for SSM key (shared or personal always-on)
+_AGENT_SSM_ID="${SHARED_AGENT_ID:-}"
+if [ -z "$_AGENT_SSM_ID" ] && [ "$EFS_MODE" = "true" ]; then
+    # Personal always-on: derive from ECS service name or tenant_id
+    # The admin console writes SSM key as agent-exec-{name} or agent-{pos}-{emp}
+    _AGENT_SSM_ID=$(echo "$TENANT_ID" | sed -n 's/personal__//p')
+    # Try to read from SSM (admin console stores: tenants/{emp}/always-on-agent → agent-id)
+    if [ -n "$_AGENT_SSM_ID" ]; then
+        _LOOKED_UP=$(aws ssm get-parameter --name "/openclaw/${STACK_NAME}/tenants/${_AGENT_SSM_ID}/always-on-agent" \
+            --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || true)
+        [ -n "$_LOOKED_UP" ] && _AGENT_SSM_ID="$_LOOKED_UP"
+    fi
+fi
+if [ "$GATEWAY_READY" = "true" ] && [ -n "$_AGENT_SSM_ID" ]; then
     DASHBOARD_OUTPUT=$(timeout 10 openclaw dashboard --no-open 2>&1 || true)
     DASHBOARD_TOKEN=$(echo "$DASHBOARD_OUTPUT" | sed -n 's/.*#token=\([a-f0-9]*\).*/\1/p' | head -1)
     if [ -n "$DASHBOARD_TOKEN" ]; then
         aws ssm put-parameter \
-            --name "/openclaw/${STACK_NAME}/always-on/${SHARED_AGENT_ID}/dashboard-token" \
+            --name "/openclaw/${STACK_NAME}/always-on/${_AGENT_SSM_ID}/dashboard-token" \
             --value "$DASHBOARD_TOKEN" --type "String" --overwrite \
             --region "$AWS_REGION" 2>/dev/null \
             && echo "[entrypoint] Dashboard pairing token stored in SSM" \
