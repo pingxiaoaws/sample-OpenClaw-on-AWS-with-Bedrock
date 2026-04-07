@@ -527,6 +527,7 @@ Resources:
                     "entries": {
                       "amazon-bedrock": {
                         "config": {
+                          "auth": "aws-sdk",
                           "discovery": {
                             "enabled": true
                           }
