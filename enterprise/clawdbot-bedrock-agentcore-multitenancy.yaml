@@ -327,6 +327,8 @@ Resources:
                 Action:
                   - 'ssm:PutParameter'
                   - 'ssm:GetParameter'
+                  - 'ssm:GetParametersByPath'
+                  - 'ssm:DeleteParameter'
                 Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/openclaw/${AWS::StackName}/*'
         - PolicyName: AgentCoreAccessPolicy
           PolicyDocument:
