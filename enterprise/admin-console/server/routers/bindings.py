@@ -217,12 +217,6 @@ def get_user_mappings():
 def create_user_mapping(body: UserMappingRequest):
     """Create or update an IM user -> employee mapping in SSM."""
     _write_user_mapping(body.channel, body.channelUserId, body.employeeId)
-    # Also write position mapping for the tenant_id that H2 Proxy derives
-    emp = next((e for e in db.get_employees() if e["id"] == body.employeeId), None)
-    if emp:
-        pos_id = emp.get("positionId", "")
-        if pos_id:
-            # Position is read from DynamoDB EMP# record — no SSM write needed.
     return {"saved": True, "channel": body.channel, "channelUserId": body.channelUserId, "employeeId": body.employeeId}
 
 
