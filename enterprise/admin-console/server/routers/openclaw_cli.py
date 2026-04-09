@@ -37,6 +37,22 @@ def openclaw_env_path() -> str:
     return os.path.dirname(find_openclaw_bin()) + ":/usr/local/bin:/usr/bin:/bin"
 
 
+def openclaw_home() -> str:
+    """Return the openclaw data directory (~/.openclaw for the ubuntu user)."""
+    return "/home/ubuntu/.openclaw"
+
+
+def openclaw_config() -> dict:
+    """Read and return the Gateway's openclaw.json config."""
+    import json
+    config_path = os.path.join(openclaw_home(), "openclaw.json")
+    try:
+        with open(config_path) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
 def parse_openclaw_json(stdout: str):
     """Parse JSON from openclaw stdout, skipping any ANSI/log preamble."""
     import json

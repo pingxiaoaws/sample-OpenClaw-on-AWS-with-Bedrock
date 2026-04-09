@@ -45,7 +45,8 @@ def _get_channel_bot_info(channel: str) -> dict:
 
     # 1. Read from Gateway's openclaw.json (authoritative source)
     try:
-        gw_config = json.load(open("/home/ubuntu/.openclaw/openclaw.json"))
+        from routers.openclaw_cli import openclaw_config
+        gw_config = openclaw_config()
         ch_cfg = gw_config.get("channels", {}).get(channel, {})
         if ch_cfg:
             info["botUsername"] = ch_cfg.get("botUsername", "")
