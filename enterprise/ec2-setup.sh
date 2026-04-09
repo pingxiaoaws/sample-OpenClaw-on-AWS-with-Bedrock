@@ -132,8 +132,44 @@ for svc in openclaw-admin tenant-router bedrock-proxy-h2; do
   echo "  $svc → $(systemctl is-active "$svc")"
 done
 
-# Also restart the main OpenClaw gateway (picks up env changes)
-systemctl restart openclaw-gateway 2>/dev/null || true
+# Configure OpenClaw Gateway to route Bedrock calls through H2 Proxy.
+# This is critical for enterprise multi-tenant routing: Gateway → H2 Proxy → Tenant Router → AgentCore.
+# Two mechanisms ensure this works regardless of openclaw version:
+# 1. openclaw.json baseUrl → http://localhost:8091 (read by some versions)
+# 2. AWS_ENDPOINT_URL_BEDROCK_RUNTIME env var (forces AWS SDK to route to H2 Proxy)
+GATEWAY_SERVICE="/home/ubuntu/.config/systemd/user/openclaw-gateway.service"
+if [ -f "$GATEWAY_SERVICE" ]; then
+  if ! grep -q "AWS_ENDPOINT_URL_BEDROCK_RUNTIME" "$GATEWAY_SERVICE"; then
+    sed -i '/\[Service\]/a Environment=AWS_ENDPOINT_URL_BEDROCK_RUNTIME=http://localhost:8091' "$GATEWAY_SERVICE"
+    echo "  Gateway: AWS_ENDPOINT_URL_BEDROCK_RUNTIME injected"
+  fi
+  # Also set EnvironmentFile so Gateway reads /etc/openclaw/env
+  if ! grep -q "EnvironmentFile" "$GATEWAY_SERVICE"; then
+    sed -i '/\[Service\]/a EnvironmentFile=-/etc/openclaw/env' "$GATEWAY_SERVICE"
+    echo "  Gateway: EnvironmentFile added"
+  fi
+fi
+
+# Set baseUrl in openclaw.json to H2 Proxy
+python3 -c "
+import json, os
+cfg = '/home/ubuntu/.openclaw/openclaw.json'
+if os.path.isfile(cfg):
+    c = json.load(open(cfg))
+    changed = False
+    providers = c.get('models', {}).get('providers', {}).get('amazon-bedrock', {})
+    if providers.get('baseUrl', '').startswith('https://bedrock-runtime'):
+        providers['baseUrl'] = 'http://localhost:8091'
+        changed = True
+    if changed:
+        json.dump(c, open(cfg, 'w'), indent=2)
+        print('  Gateway: baseUrl set to http://localhost:8091')
+" 2>/dev/null || true
+
+# Reload and restart Gateway
+sudo -H -u ubuntu XDG_RUNTIME_DIR=/run/user/1000 systemctl --user daemon-reload 2>/dev/null || true
+sudo -H -u ubuntu XDG_RUNTIME_DIR=/run/user/1000 systemctl --user restart openclaw-gateway 2>/dev/null || true
+echo "  openclaw-gateway restarted"
 
 echo ""
 echo "══════════════════════════════════════════════════"
