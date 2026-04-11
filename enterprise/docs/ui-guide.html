@@ -858,7 +858,175 @@ Fields: id, name, scope (global|department), docCount,
 <p>server.py（行 619-709）：读取 CONFIG#kb-assignments → 从 S3 下载文件到 <code>/workspace/knowledge/{kb_id}/</code> → KB 路径追加到 SOUL.md。特别：org-directory KB <strong>直接内联</strong>到 SOUL.md（不只是路径引用）。</p>
 `); }},
 
-im: { en:{title:'IM Channels — Last Mile',sub:'Connect IM platforms for employee chat.'}, zh:{title:'IM 渠道 — 最后一公里',sub:'连接 IM 平台让员工聊天。'}, body(){ return intent('IM channels = <strong>last mile</strong>. Agents meet employees where they are (Feishu, Telegram, Discord, Slack). Admin configures once via Gateway UI. Employees self-pair via Portal. <strong>DM access mode MUST be "Open"</strong> — H2 Proxy handles identity, not Gateway.','IM 渠道 = <strong>最后一公里</strong>。Agent 在员工已有平台交流（飞书、Telegram、Discord、Slack）。管理员在 Gateway UI 配置一次。员工通过门户自助配对。<strong>DM 访问模式必须选 "Open"</strong> — H2 Proxy 处理身份验证。') + steps(t('Setup:','设置：'),t(['Port-forward to Gateway UI (port 18789)','Channels → Add Feishu/Telegram/Discord','<strong>DM access = "Open"</strong> (not Pairing!)','Admin Console → IM Channels → Refresh → "Bot Active"','Employees: Portal → Connect IM → self-pair'],['端口转发到 Gateway UI（端口 18789）','Channels → 添加飞书/Telegram/Discord','<strong>DM 访问 = "Open"</strong>（不是 Pairing！）','Admin Console → IM Channels → 刷新 → "Bot Active"','员工：Portal → Connect IM → 自助配对'])) + note('warn','⚠️',t('<strong>Critical:</strong> If DM policy is "Pairing", employees get blocked. H2 Proxy does binding check — Gateway-level pairing is unnecessary for enterprise.','<strong>关键：</strong>如果 DM 策略是"Pairing"，员工会被阻止。H2 Proxy 做绑定检查 — 企业版不需要 Gateway 层配对。')); }},
+im: { en:{title:'IM Channels — The Last Mile',sub:'How employee messages flow from Feishu/Telegram/Discord through 5 components to reach their personal AI agent.'}, zh:{title:'IM 渠道 — 最后一公里',sub:'员工消息如何从飞书/Telegram/Discord 经过 5 个组件到达个人 AI Agent。'}, body(){ return intent(
+      t(
+        '<strong>Why integrate IM instead of just building a web portal?</strong> Employees won\'t adopt a new app for AI — they already live in Feishu, Slack, Teams 8+ hours a day. IM integration means <strong>zero adoption friction</strong>: the AI agent appears as just another colleague in the employee\'s existing chat app. No new URLs to remember, no new passwords, no training. The technical challenge: a single Feishu bot must serve 500 employees, each with their own agent identity, tools, and memory. We solve this with a <strong>5-component routing pipeline</strong> that turns one shared bot into 500 personal AI assistants. Security-wise, the Gateway accepts all messages (DM policy = Open), but H2 Proxy enforces strict identity verification — only employees who completed the pairing flow can use the bot. Unbound users get a clear rejection message, not a generic agent response.',
+        '<strong>为什么集成 IM 而不只是建一个网页门户？</strong>员工不会为 AI 采用新应用——他们每天已经在飞书、Slack、Teams 上花 8+ 小时。IM 集成意味着<strong>零采用摩擦</strong>：AI Agent 在员工已有聊天应用中就像另一个同事。无需记住新 URL、新密码、无需培训。技术挑战：一个飞书 bot 必须服务 500 名员工，每人有自己的 Agent 身份、工具和记忆。我们用<strong>5 组件路由管道</strong>将一个共享 bot 变成 500 个个人 AI 助手。安全方面，Gateway 接受所有消息（DM 策略 = Open），但 H2 Proxy 强制身份验证——只有完成配对的员工能使用 bot。未绑定用户收到明确拒绝消息，而非通用 Agent 回复。'
+      )
+    )
+    + sectionHead(t('Admin Setup: Configure IM Bot','管理员设置：配置 IM Bot'))
+    + steps(t('One-time setup (5 minutes):','一次性设置（5 分钟）：'),t([
+      'Port-forward to Gateway UI: <code>aws ssm start-session --target &lt;ID&gt; --region &lt;REGION&gt; --document-name AWS-StartPortForwardingSession --parameters portNumber=18789,localPortNumber=18789</code>',
+      'Open <strong>http://localhost:18789</strong> → Channels → Add Feishu (or Telegram/Discord/Slack)',
+      'Enter bot credentials (Feishu: App ID + App Secret; Telegram: Bot Token)',
+      '<strong>Critical: DM access mode → select "Open"</strong> (not "Pairing"!)',
+      'Verify: Admin Console → IM Channels → Refresh → should show "Bot Active"'
+    ],[
+      '端口转发到 Gateway UI：<code>aws ssm start-session --target &lt;ID&gt; --region &lt;REGION&gt; --document-name AWS-StartPortForwardingSession --parameters portNumber=18789,localPortNumber=18789</code>',
+      '打开 <strong>http://localhost:18789</strong> → Channels → 添加飞书（或 Telegram/Discord/Slack）',
+      '输入 bot 凭据（飞书：App ID + App Secret；Telegram：Bot Token）',
+      '<strong>关键：DM 访问模式 → 选择 "Open"</strong>（不是"Pairing"！）',
+      '验证：Admin Console → IM Channels → 刷新 → 应显示 "Bot Active"'
+    ]))
+    + sectionHead(t('Employee Self-Service: Connect IM','员工自助：连接 IM'))
+    + steps(t('3-step pairing flow:','3 步配对流程：'),t([
+      '<strong>Portal:</strong> Employee logs in → Connect IM → clicks "Connect" on Feishu → gets pairing token + QR code',
+      '<strong>Feishu:</strong> Employee opens bot chat, sends <code>/start TOKEN</code> → bot replies "Linking to [Mike Johnson · Account Executive]. Reply BIND to confirm."',
+      '<strong>Confirm:</strong> Employee sends <code>BIND</code> → "Connected! You can now chat with your AI Agent here." → all future messages route to Mike\'s AgentCore VM'
+    ],[
+      '<strong>Portal：</strong>员工登录 → Connect IM → 点击飞书的"Connect" → 获取配对令牌 + QR 码',
+      '<strong>飞书：</strong>员工打开 bot 聊天，发送 <code>/start TOKEN</code> → bot 回复"绑定 [Mike Johnson · Account Executive]。回复 BIND 确认。"',
+      '<strong>确认：</strong>员工发送 <code>BIND</code> → "Connected! 现在可以在这里和你的 AI Agent 聊天了。" → 之后所有消息路由到 Mike 的 AgentCore VM'
+    ]))
+    + note('warn','⚠️',t(
+      '<strong>Why "Open" and not "Pairing"?</strong> If Gateway DM policy is "Pairing", it blocks unknown users BEFORE H2 Proxy sees the message. The /start TOKEN command never reaches PATH C. Employees are stuck with a "pairing code" prompt that doesn\'t work with our enterprise flow. "Open" mode lets all messages through — H2 Proxy handles identity verification at a smarter level (DynamoDB binding check).',
+      '<strong>为什么选"Open"而不是"Pairing"？</strong>如果 Gateway DM 策略是"Pairing"，它在 H2 Proxy 看到消息之前就阻止未知用户。/start TOKEN 命令永远到不了 PATH C。员工卡在一个与我们企业流程不兼容的"pairing code"提示上。"Open"模式让所有消息通过——H2 Proxy 在更智能的层级做身份验证（DynamoDB 绑定检查）。'
+    ))
+    + deep(
+`<h4>The Complete 11-Step Message Flow</h4>
+<p>When an employee sends a message in Feishu, here's exactly what happens at each component:</p>
+<div class="code">Step 1:  Employee sends "帮我查一下Q3的收入数据" in Feishu
+Step 2:  Feishu platform delivers webhook to EC2 Gateway (port 18789)
+Step 3:  Gateway's local OpenClaw agent receives the message
+Step 4:  Agent calls Bedrock API to generate a response
+Step 5:  AWS SDK intercepts: AWS_ENDPOINT_URL_BEDROCK_RUNTIME=http://localhost:8091
+         → Request goes to H2 Proxy instead of real Bedrock
+Step 6:  H2 Proxy: extractUserMessage() parses the Bedrock Converse API body
+         → Extracts: channel="feishu", userId="ou_804adf76...", text="帮我查..."
+Step 7:  H2 Proxy: checkImBinding("feishu", "ou_804adf76...")
+         → GET http://localhost:8099/api/v1/internal/im-binding-check
+         → DynamoDB: MAPPING#feishu__ou_804adf76... → employeeId="emp-mike"
+Step 8:  H2 Proxy: forwardToTenantRouter("feishu", "ou_804adf76...", "帮我查...")
+         → POST http://localhost:8090/route
+Step 9:  Tenant Router: derive_tenant_id("feishu", "emp-mike") 
+         → "emp__emp-mike__e5fdcd7d6e239fd6eda"
+         → invoke_agent_runtime(runtime_id, tenant_id, message)
+Step 10: AgentCore microVM: workspace_assembler merges SOUL
+         → openclaw agent CLI processes message → calls real Bedrock
+Step 11: Response flows back: AgentCore → Tenant Router → H2 Proxy
+         → H2 Proxy builds fake Bedrock response → Gateway → Feishu</div>
+
+<h4>The Gateway → H2 Proxy Connection: A Critical Design Detail</h4>
+<p>The Gateway (openclaw@2026.3.24) doesn't have a plugin system for intercepting messages. We can't tell it "send this message to Tenant Router instead of processing it locally." Instead, we use a <strong>man-in-the-middle approach</strong>:</p>
+<div class="code">openclaw.json: { "baseUrl": "http://localhost:8091" }  // Tells Gateway where Bedrock is
+Gateway systemd: Environment=AWS_ENDPOINT_URL_BEDROCK_RUNTIME=http://localhost:8091
+                 // Backup: forces AWS SDK to route to H2 Proxy regardless of baseUrl config</div>
+<p>The Gateway thinks it's talking to Bedrock. H2 Proxy intercepts the Converse API call, extracts the user's message from the API body, does routing, and returns a response formatted exactly like a Bedrock API response. The Gateway has no idea multi-tenancy is happening.</p>
+
+<h4>H2 Proxy PATH C: The Pairing State Machine</h4>
+<p>File: <code>enterprise/gateway/bedrock_proxy_h2.js</code> (lines 648-760)</p>
+<div class="code">State: UNBOUND (no MAPPING# record)
+  → Any message → checkImBinding() → "not bound" → inject rejection message
+  → "/start TOKEN" → callAdminAPI('/bindings/pair-pending') 
+    → if valid: store in pendingPairings Map → inject "Reply BIND to confirm"
+
+State: PENDING (pendingPairings has entry, 10 min TTL)
+  → "BIND" → callAdminAPI('/bindings/pair-complete')
+    → DynamoDB MAPPING# created → _bindingCache cleared → inject "Connected!"
+  → "CANCEL" → delete pending → inject "Cancelled"
+  → timeout (10 min) → expired, next /start needed
+
+State: BOUND (MAPPING# exists, or in _bindingCache)
+  → Any message → forwardToTenantRouter() → AgentCore response</div>
+
+<h4>Why \\bBIND\\b Instead of ^BIND$</h4>
+<p>OpenClaw@2026.3.24's Gateway wraps user messages in metadata blocks before calling Bedrock:</p>
+<div class="code">// What the user sent:
+"BIND"
+
+// What H2 Proxy sees in the Bedrock API body (userText):
+"Conversation info (untrusted metadata):
+\`\`\`json
+{"message_id": "om_xxx", "sender_id": "ou_xxx", "sender": "Mike"}
+\`\`\`
+BIND"</div>
+<p>The regex <code>^BIND$</code> would NEVER match because the text starts with "Conversation info..." not "BIND". <code>\\bBIND\\b</code> (word boundary) finds "BIND" anywhere in the text. Same fix applied to CANCEL.</p>
+
+<h4>Binding Cache: The 60-Second Gotcha</h4>
+<p><code>_bindingCache</code> Map caches binding check results for 60 seconds to reduce DynamoDB API calls. When pair-complete succeeds, the "not bound" result is still cached. Without our fix, the employee sends their first real message within 60 seconds → gets "not linked" rejection → confusion.</p>
+<p><strong>Fix:</strong> After successful pair-complete, explicitly delete cache entry: <code>_bindingCache.delete(\`\${channel}:\${userId}\`)</code></p>
+
+<h4>Channel Status Detection</h4>
+<p>Admin Console's IM Channels page calls <code>_run_openclaw_channels()</code> which runs <code>openclaw channels list</code> CLI on EC2. The <strong>text format</strong> (not --json) is used because only text output distinguishes "configured" from "not configured":</p>
+<div class="code">- Telegram default: not configured, token=none, enabled  → configured=false
+- Feishu default: configured, enabled                     → configured=true</div>
+<p>The --json format lists ALL enabled plugins without credential status — would show Telegram as "connected" even without a bot token.</p>
+
+<h4>QR Code / Deep Link Generation</h4>
+<p>Portal's pair-start endpoint reads the Feishu appId from Gateway's <code>openclaw.json</code> (via <code>openclaw_cli.openclaw_config()</code>), not from a hardcoded value. This means: admin configures Feishu in Gateway UI → appId is written to openclaw.json → Portal reads it dynamically → QR code always points to the correct bot.</p>
+
+<h4>⚠️ Self-Audit: Design Gotchas We Discovered</h4>
+<ul style="font-size:12px;color:var(--text-s);line-height:1.8">
+<li><strong>Gateway DM policy must be "Open":</strong> We initially thought "Pairing" mode would work for enterprise (admin approves, employees join). It doesn't — Gateway's native pairing is for personal use (1 user, 1 bot). Our enterprise flow (/start TOKEN → BIND) runs inside H2 Proxy, which only sees messages AFTER Gateway lets them through. Pairing mode blocks at Gateway level → H2 Proxy never sees /start.</li>
+<li><strong>AWS_ENDPOINT_URL_BEDROCK_RUNTIME is essential:</strong> Setting baseUrl in openclaw.json to http://localhost:8091 was supposed to redirect Gateway's Bedrock calls to H2 Proxy. But openclaw@2026.3.24's Gateway ignores this setting in some configurations. The env var <code>AWS_ENDPOINT_URL_BEDROCK_RUNTIME</code> is an AWS SDK-level override that the application code cannot bypass — it's the reliable mechanism.</li>
+<li><strong>H2 Proxy must use bash -c "source nvm.sh && node":</strong> The systemd service file originally used <code>bash -lc "node ..."</code>. But Ubuntu's .bashrc has <code>[ -z "$PS1" ] && return</code> which skips nvm initialization in non-interactive shells. H2 Proxy crashed 1100+ times before this was caught. The fix: explicitly source nvm.</li>
+<li><strong>Settings → System health check shows port 8091 "Listening" even when H2 Proxy is crashing:</strong> The check uses <code>ss -tlnp | grep 8091</code>. During crash-restart loops (every 5s), the process briefly binds the port before exiting. The health check can catch this brief moment and report "Listening" falsely. A proper fix would use HTTP health check on port 8092.</li>
+<li><strong>Binding cache must be cleared on pair-complete:</strong> Without clearing, the "not bound" cache entry (60s TTL) causes the first real message after pairing to be rejected. Discovered during live testing — employee successfully paired but next message still got "not linked".</li>
+<li><strong>BIND regex: ^$ vs \\b:</strong> Gateway wraps user text in metadata. Simple ^BIND$ never matches. Must use word boundary \\bBIND\\b. Applies to all command matching in H2 Proxy.</li>
+</ul>`,
+
+`<h4>完整 11 步消息流</h4>
+<p>当员工在飞书发送消息时，每个组件的处理过程：</p>
+<div class="code">步骤 1:  员工在飞书发送"帮我查一下Q3的收入数据"
+步骤 2:  飞书平台投递 webhook 到 EC2 Gateway（端口 18789）
+步骤 3:  Gateway 的本地 OpenClaw agent 接收消息
+步骤 4:  Agent 调用 Bedrock API 生成回复
+步骤 5:  AWS SDK 拦截：AWS_ENDPOINT_URL_BEDROCK_RUNTIME=http://localhost:8091
+         → 请求去 H2 Proxy 而非真实 Bedrock
+步骤 6:  H2 Proxy: extractUserMessage() 解析 Bedrock Converse API body
+         → 提取: channel="feishu", userId="ou_804adf76...", text="帮我查..."
+步骤 7:  H2 Proxy: checkImBinding("feishu", "ou_804adf76...")
+         → DynamoDB: MAPPING#feishu__ou_804adf76... → emp-mike
+步骤 8:  H2 Proxy: forwardToTenantRouter() → POST localhost:8090/route
+步骤 9:  Tenant Router: derive_tenant_id → "emp__emp-mike__hash"
+         → invoke_agent_runtime() → AgentCore VM
+步骤 10: AgentCore: workspace_assembler 合并 SOUL → openclaw agent CLI → 真实 Bedrock
+步骤 11: 响应原路返回：AgentCore → Tenant Router → H2 Proxy → Gateway → 飞书</div>
+
+<h4>Gateway → H2 Proxy 连接：关键设计细节</h4>
+<p>Gateway 没有消息拦截插件。我们用<strong>中间人方式</strong>：</p>
+<div class="code">openclaw.json: { "baseUrl": "http://localhost:8091" }
+Gateway systemd: Environment=AWS_ENDPOINT_URL_BEDROCK_RUNTIME=http://localhost:8091</div>
+<p>Gateway 以为在和 Bedrock 通信。H2 Proxy 拦截 Converse API 调用，提取用户消息，做路由，返回格式完全像 Bedrock API 响应的内容。Gateway 不知道多租户正在发生。</p>
+
+<h4>H2 Proxy PATH C：配对状态机</h4>
+<div class="code">状态：UNBOUND（无 MAPPING# 记录）
+  → 任何消息 → "not bound" 拒绝
+  → "/start TOKEN" → 验证令牌 → "回复 BIND 确认"
+
+状态：PENDING（pendingPairings 有条目，10 分钟 TTL）
+  → "BIND" → 创建 MAPPING# → 清除缓存 → "Connected!"
+  → "CANCEL" → 删除 pending → "已取消"
+
+状态：BOUND（MAPPING# 存在）
+  → 任何消息 → forwardToTenantRouter() → AgentCore 响应</div>
+
+<h4>为什么用 \\bBIND\\b 而非 ^BIND$</h4>
+<p>OpenClaw 将用户文本包装在 metadata 块中。userText 是 "Conversation info...\\nBIND" 而非纯 "BIND"。^BIND$ 永远匹配不到。\\bBIND\\b（单词边界）在任意位置找到 BIND。</p>
+
+<h4>通道状态检测</h4>
+<p>使用 <code>openclaw channels list</code> 的<strong>文本格式</strong>（非 --json），因为只有文本区分"configured"和"not configured"。--json 格式列出所有启用插件，不区分是否有凭据。</p>
+
+<h4>⚠️ 自审：我们发现的设计陷阱</h4>
+<ul style="font-size:12px;color:var(--text-s);line-height:1.8">
+<li><strong>Gateway DM 策略必须为 "Open"：</strong>最初以为"Pairing"适合企业（管理员审批，员工加入）。不行——Gateway 原生配对是个人用途。企业流程（/start → BIND）在 H2 Proxy 内运行，而 Pairing 模式在 Gateway 层面阻止 → H2 Proxy 永远看不到 /start。</li>
+<li><strong>AWS_ENDPOINT_URL 是必需的：</strong>openclaw.json 的 baseUrl 设置被 openclaw@2026.3.24 忽略。AWS SDK 环境变量是可靠机制。</li>
+<li><strong>H2 Proxy 必须显式 source nvm：</strong>systemd 用 bash -lc 不加载 nvm（Ubuntu .bashrc 跳过非交互式）。H2 Proxy 崩溃 1100+ 次才发现。</li>
+<li><strong>端口健康检查假阳性：</strong>ss -tlnp 在崩溃重启循环中捕获到端口短暂绑定 → 误报"Listening"。应改用 HTTP 健康检查。</li>
+<li><strong>绑定缓存必须在 pair-complete 后清除：</strong>否则 60 秒内首条真实消息被拒绝。</li>
+<li><strong>BIND 正则：^$ vs \\b：</strong>Gateway 包装用户文本在 metadata 中。所有命令匹配必须用单词边界。</li>
+</ul>`
+    ); }},
 
 sec: { en:{title:'Security Center',sub:'Defense in depth — 4 independent layers.'}, zh:{title:'安全中心',sub:'纵深防御 — 4 层独立防护。'}, body(){ return intent('SOUL says what agents <strong>should</strong> do. Security enforces what they <strong>can</strong> do. 4 layers: L1 SOUL (prompt rules), L2 Permission (tool allowlist), L3 Guardrail (Bedrock filtering), L4 Runtime (isolated VM). Bank vault: lock + alarm + guard.','SOUL 说明 Agent <strong>应该</strong>做什么。安全强制执行 Agent <strong>能</strong>做什么。4 层：L1 SOUL（提示规则）、L2 Permission（工具白名单）、L3 Guardrail（Bedrock 过滤）、L4 Runtime（隔离 VM）。银行保险库：锁 + 警报 + 保安。')
     + card(t('Defense Layers','防护层次'),['L4','Runtime','Isolated Firecracker microVM','var(--primary)','L3','Guardrail','Bedrock content filtering','var(--cyan)','L2','Permission','Tool allowlist per position','var(--success)','L1','SOUL','Prompt-level rules','var(--warn)'].reduce((a,_,i,arr)=>i%4===0?a+`<div style="display:flex;align-items:center;gap:10px;padding:6px 0;font-size:12px"><span style="color:${arr[i+3]};font-weight:700;width:28px">${arr[i]}</span><span style="font-weight:600;min-width:90px">${arr[i+1]}</span><span style="color:var(--text-m)">${arr[i+2]}</span></div>`:a,''))
