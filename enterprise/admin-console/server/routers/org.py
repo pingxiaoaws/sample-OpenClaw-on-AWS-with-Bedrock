@@ -170,10 +170,29 @@ def update_employee(emp_id: str, body: dict, authorization: str = Header(default
     require_role(authorization, roles=["admin"])
     body.pop("id", None)
     body.pop("passwordHash", None)  # password changes must go through /auth/change-password
+
+    # Detect position change — if employee has always-on, warn about restart needed
+    old_emp = db.get_employee(emp_id)
+    position_changed = False
+    if old_emp and body.get("positionId") and body["positionId"] != old_emp.get("positionId"):
+        position_changed = True
+
     result = db.update_employee(emp_id, body)
     if not result:
         raise HTTPException(404, f"Employee {emp_id} not found")
-    return result
+
+    warning = None
+    if position_changed and old_emp.get("alwaysOnEnabled"):
+        warning = (
+            f"Position changed. Always-on container needs restart "
+            f"(new tier may have different model, guardrail, IAM role, and security group). "
+            f"Go to Agent Factory → {emp_id} → Restart."
+        )
+
+    resp = dict(result)
+    if warning:
+        resp["warning"] = warning
+    return resp
 
 
 @router.delete("/employees/{emp_id}")
@@ -201,9 +220,10 @@ def delete_employee(emp_id: str, force: bool = False, authorization: str = Heade
             db.delete_binding(b["id"])
         for m in im_mappings:
             db.delete_user_mapping(m["channel"], m["channelUserId"])
-        # Cascade: delete agent + S3 workspace
+        # Cascade: delete agent + S3 workspace + always-on infrastructure
         if agent_id:
             db.delete_agent(agent_id)
+            # S3 workspace cleanup
             try:
                 import boto3 as _b3del
                 s3_bucket = os.environ.get("S3_BUCKET", "")
@@ -214,6 +234,36 @@ def delete_employee(emp_id: str, force: bool = False, authorization: str = Heade
                         s3.delete_object(Bucket=s3_bucket, Key=obj["Key"])
             except Exception:
                 pass
+            # Always-on cleanup: stop ECS Service + delete Access Point + delete EFS dir + delete SSM
+            if emp and emp.get("alwaysOnEnabled"):
+                try:
+                    from routers.admin_always_on import stop_always_on_agent
+                    stop_always_on_agent(agent_id, authorization=authorization)
+                except Exception as _e_ao:
+                    print(f"[delete-emp] ECS stop failed: {_e_ao}")
+                # Delete EFS Access Point
+                try:
+                    ap_id = emp.get("alwaysOnAccessPointId", "")
+                    if ap_id:
+                        _b3del.client("efs", region_name=os.environ.get("AWS_REGION", "us-east-1")).delete_access_point(AccessPointId=ap_id)
+                except Exception:
+                    pass
+                # Delete EFS workspace directory
+                import shutil as _shutil
+                efs_path = f"/mnt/efs/{emp_id}"
+                if os.path.isdir(efs_path):
+                    _shutil.rmtree(efs_path, ignore_errors=True)
+                # Delete SSM endpoint + gateway-token
+                try:
+                    _ssm_del = _b3del.client("ssm", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+                    stack = os.environ.get("STACK_NAME", "openclaw")
+                    for suffix in ["/endpoint", "/gateway-token", "/dashboard-token"]:
+                        try:
+                            _ssm_del.delete_parameter(Name=f"/openclaw/{stack}/always-on/{agent_id}{suffix}")
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
     db.delete_employee(emp_id)
     # Audit
     db.create_audit_entry({

@@ -409,3 +409,53 @@ def department_budget(authorization: str = Header(default="")):
         "memberCount": len(dept_emps),
         "members": members,
     }
+
+
+# ── Fargate cost estimation ─────────────────────────────────────────────
+
+# Fargate ARM64 pricing (us-east-2 / ap-northeast-1, approximate)
+_FARGATE_HOURLY = {
+    "256/512": 0.01011,    # 0.25 vCPU / 512 MB
+    "512/1024": 0.02228,   # 0.5 vCPU / 1 GB
+    "1024/2048": 0.04456,  # 1 vCPU / 2 GB
+}
+
+@router.get("/api/v1/usage/fargate-cost")
+def usage_fargate_cost(authorization=Header(default="")):
+    """Estimated Fargate infrastructure cost for all always-on employees."""
+    from shared import require_role
+    require_role(authorization, roles=["admin"])
+
+    employees = db.get_employees()
+    agents = db.get_agents()
+    agent_map = {a["id"]: a for a in agents}
+
+    items = []
+    total = 0.0
+    for emp in employees:
+        if not emp.get("alwaysOnEnabled"):
+            continue
+        tier = emp.get("alwaysOnTier", "standard")
+        # Estimate based on tier default resources
+        if tier in ("standard", "restricted"):
+            hourly = _FARGATE_HOURLY.get("256/512", 0.01011)
+            resource = "0.25 vCPU / 512 MB"
+        else:
+            hourly = _FARGATE_HOURLY.get("512/1024", 0.02228)
+            resource = "0.5 vCPU / 1 GB"
+
+        monthly = round(hourly * 24 * 30, 2)
+        total += monthly
+        items.append({
+            "employeeId": emp["id"],
+            "employeeName": emp.get("name", ""),
+            "tier": tier,
+            "resource": resource,
+            "monthlyEstimate": monthly,
+        })
+
+    return {
+        "items": items,
+        "totalMonthly": round(total, 2),
+        "count": len(items),
+    }

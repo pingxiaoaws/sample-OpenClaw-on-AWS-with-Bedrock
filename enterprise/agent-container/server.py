@@ -197,21 +197,25 @@ def _write_usage_to_dynamodb(tenant_id: str, base_id: str, usage: dict, model: s
         pricing = MODEL_PRICING.get(model, {"input": 0.30, "output": 2.50})
         cost = Decimal(str(round((input_tokens * pricing["input"] + output_tokens * pricing["output"]) / 1_000_000, 6)))
 
-        # 1. Atomic increment USAGE#{base_id}#{date}
+        # 1. Atomic increment USAGE#{base_id}/{agent_type}#{date}
+        # Detect agent type: EFS_ENABLED=true means Fargate always-on
+        agent_type = "always-on" if os.environ.get("EFS_ENABLED") == "true" else "serverless"
+        usage_key = f"USAGE#{base_id}/{agent_type}#{today}"
         table.update_item(
-            Key={"PK": org_pk, "SK": f"USAGE#{base_id}#{today}"},
-            UpdateExpression="SET #d = :date, agentId = :aid, model = :model, GSI1PK = :gsi1pk, GSI1SK = :gsi1sk ADD inputTokens :inp, outputTokens :out, requests :one, cost :cost",
+            Key={"PK": org_pk, "SK": usage_key},
+            UpdateExpression="SET #d = :date, agentId = :aid, model = :model, agentType = :at, GSI1PK = :gsi1pk, GSI1SK = :gsi1sk ADD inputTokens :inp, outputTokens :out, requests :one, cost :cost",
             ExpressionAttributeNames={"#d": "date"},
             ExpressionAttributeValues={
                 ":date": today,
                 ":aid": base_id,
                 ":model": model,
+                ":at": agent_type,
                 ":inp": input_tokens,
                 ":out": output_tokens,
                 ":one": 1,
                 ":cost": cost,
                 ":gsi1pk": "TYPE#usage",
-                ":gsi1sk": f"USAGE#{today}#{base_id}",
+                ":gsi1sk": f"USAGE#{today}#{base_id}/{agent_type}",
             },
         )
 
