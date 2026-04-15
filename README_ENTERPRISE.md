@@ -468,23 +468,25 @@ Zero IT friction. Employees self-service in 30 seconds. Admins see all connectio
 
 ---
 
-**What you're deploying:** A multi-tenant enterprise AI platform — a gateway layer (Tenant Router + Admin Console) routes requests to isolated Firecracker microVMs via AWS Bedrock AgentCore. Two Docker images, two Runtimes (Standard + Executive), one DynamoDB table, one S3 bucket. Optional ECS Fargate always-on agents for scheduled tasks and direct IM.
+**What you're deploying:** A multi-tenant enterprise AI platform — a gateway layer (Tenant Router + Admin Console) routes requests to isolated Firecracker microVMs via AWS Bedrock AgentCore. One Docker image serves both AgentCore (serverless) and ECS Fargate (always-on). 4 AgentCore Runtimes (Standard/Restricted/Engineering/Executive), one DynamoDB table, one S3 bucket, one ECS cluster with 4 tier services.
 
-**Run Docker builds on the gateway EC2, not the user's local machine.** After Step 1 creates the EC2, use SSM to build on it — the EC2 is ARM64 Graviton, has Docker pre-installed, and has fast internal network to ECR. Building ARM64 images locally via QEMU emulation is slow and error-prone. Use `enterprise/agent-container/build-on-ec2.sh` for the standard image; adapt the same pattern for exec-agent (Step 1.5).
+**Run Docker builds on the gateway EC2, not the user's local machine.** `deploy.sh` handles this automatically — packages source → S3 → EC2 builds via SSM (ARM64 Graviton). No local Docker required.
 
 **Critical — these will silently break deployment if missed:**
 
-1. **The `openclaw` npm package is pinned to `2026.3.24`** in `agent-container/Dockerfile` and `exec-agent/Dockerfile` — do not upgrade. Newer versions changed the Gateway response delivery mechanism and break IM channel integration. (The single-user EC2 template supports `2026.4.5+` but Enterprise remains on `2026.3.24`.)
-2. **Build both Docker images** — `agent-container/` (standard) and `exec-agent/` (executive). Don't skip exec even if only standard agents are needed initially.
-3. **Docker build takes 10–15 min** — `clawhub install` installs skills one by one. This is normal.
-4. **After `update-agent-runtime`**, poll until `status: READY` before testing.
-5. **DynamoDB is in `us-east-2` by default** (AgentCore is `us-east-1`). This is intentional — DynamoDB cross-region access is free and `us-east-2` avoids hitting AgentCore's region during heavy load.
+1. **OpenClaw is pinned to `2026.3.24`** in `agent-container/Dockerfile` and `exec-agent/Dockerfile` — do not upgrade. Newer versions changed Gateway response delivery and break IM channel integration. (The single-user EC2 template supports `2026.4.5+` but Enterprise remains on `2026.3.24`.)
+2. **Docker build takes 10–15 min** — `clawhub install` installs skills one by one. This is normal.
+3. **After `update-agent-runtime`**, poll until `status: READY` before testing.
+4. **DynamoDB is in `us-east-2` by default** (AgentCore is `us-east-1`). This is intentional — DynamoDB cross-region access is free.
+5. **deploy.sh creates 4 Fargate tier services** with `desiredCount=0`. Admin activates per-employee always-on from Security Center UI.
+6. **All 20 seed employees share one `ADMIN_PASSWORD`** — each must change on first login. Roles are seeded separately by `seed_roles.py`.
 
 **Verify it works** (after deployment):
-- Playground → Carol Zhang (Finance) → "run git status" → refused ✓
-- Playground → Ryan Park (SDE) → "run git status" → executes ✓
-- Playground → Rachel Li (Legal) → "what new tokens are going live?" → Guardrail blocks ✓
-- Playground → WJD (Executive) → same question → answers freely ✓
+- Login as `emp-jiade` (admin) → Dashboard shows 13 depts, 11 positions, 20 employees
+- Playground → Carol Zhang (Finance) → "run git status" → refused (Restricted tier)
+- Playground → Ryan Park (SDE) → "run git status" → executes (Engineering tier)
+- Portal → Carol Zhang → Chat → "Who are you?" → "Finance Analyst Agent at ACME Corp"
+- Security Center → 4 runtimes all READY
 
 **If AgentCore returns 500:** check CloudWatch group `/aws/bedrock-agentcore/runtimes/<runtime-id>-DEFAULT` for `openclaw returned empty output` — wrong openclaw version. Rebuild with `openclaw@2026.3.24`.
 
@@ -512,9 +514,9 @@ Zero IT friction. Employees self-service in 30 seconds. Admins see all connectio
 > **No local Docker required** — the agent container image is built on the gateway EC2 (ARM64 Graviton) via SSM.
 
 **AWS requirements:**
-- Bedrock model access: Nova 2 Lite (default) + Anthropic Claude (exec tier + Admin Assistant)
+- Bedrock model access is automatic — no manual enablement required
 - Bedrock AgentCore available in: `us-east-1`, `us-west-2`
-- IAM permissions: `cloudformation:*`, `ec2:*`, `iam:*`, `ecr:*`, `s3:*`, `ssm:*`, `bedrock:*`, `dynamodb:*`
+- IAM permissions: `cloudformation:*`, `ec2:*`, `iam:*`, `ecr:*`, `s3:*`, `ssm:*`, `bedrock:*`, `dynamodb:*`, `ecs:*`, `efs:*`
 
 ### Step 1: Configure and Deploy
 
@@ -765,8 +767,8 @@ Employees self-service pair via Portal → Connect IM (QR code). No admin approv
 ## What to Test
 
 ### 1. SOUL Injection (core differentiator)
-Login as **Carol Zhang** (Finance) → Chat → "Who are you?" → **"ACME Corp Finance Analyst"**
-Login as **Ryan Park** (SDE) → Chat → "Who are you?" → **"ACME Corp Software Engineer"**
+Login as **Carol Zhang** (emp-carol, Finance) → Chat → "Who are you?" → **"ACME Corp Finance Analyst"**
+Login as **Ryan Park** (emp-ryan, SDE) → Chat → "Who are you?" → **"ACME Corp Software Engineer"**
 Same LLM. Completely different identities.
 
 ### 2. Digital Twin
@@ -777,15 +779,14 @@ Turn OFF → incognito tab gets 404 immediately
 ### 3. Org Directory (Knowledge Base)
 Ask any agent: *"Who should I contact for a code review?"* or *"What does Marcus Bell do?"*
 → Agent reads `kb-org-directory` (seeded into every position) and answers with the right person's name, role, IM channel, and agent capabilities
-→ Works out-of-box after running `seed_knowledge_docs.py` — no manual KB assignment needed
 
-### 4. Permission Boundaries
-Carol Zhang: "Run git status" → **Refused** (Finance, no shell)
-Ryan Park: "Run git status" → **Executed** (SDE, has shell)
-WJD / Ada: Any command → **Executed** (Executive tier, zero restrictions, Sonnet 4.6)
+### 4. Permission Boundaries (4-tier)
+Carol Zhang (Restricted): "Run git status" → **Refused** (Finance, no shell)
+Ryan Park (Engineering): "Run git status" → **Executed** (SDE, has shell)
+Peter Wu (Executive): Any command → **Executed** (Executive tier, Sonnet 4.6)
 
 ### 5. Multi-Runtime
-Login as **Ada** or **WJD** → these route to the Executive AgentCore Runtime:
+Login as **Peter Wu** (emp-peter) or **JiaDe Wang** (emp-jiade) → these route to the Executive AgentCore Runtime:
 - Model: Claude Sonnet 4.6 (vs Nova 2 Lite for standard)
 - Tools: all unlocked
 - IAM: full S3, all Bedrock models, cross-dept DynamoDB
@@ -832,55 +833,89 @@ Knowledge Base → **Assignments tab** → all positions are pre-assigned these 
 
 To add a new KB: Admin Console → Knowledge Base → upload Markdown → Assignments tab → assign to positions → agents pick it up on next cold start.
 
-## Demo Accounts
+## Seed Accounts
 
-> **Executive accounts (Ada, WJD)** run on the Executive AgentCore Runtime with Claude Sonnet 4.6, zero tool restrictions, and a full-access IAM role.
+> The seed data creates 20 employees across 11 positions. Roles are assigned by `seed_roles.py`: 2 admins, 3 managers, 15 employees. All share the initial `ADMIN_PASSWORD` and must change it on first login.
 
-| Employee ID | Name | Role | Runtime | What They Experience |
-|-------------|------|------|---------|---------------------|
-| **emp-ada** | **Ada** | **Executive** | **exec-agent · Sonnet 4.6** | **All tools · Full IAM · Feishu + Telegram 🔓** |
-| **emp-wjd** | **WJD** | **Executive** | **exec-agent · Sonnet 4.6** | **All tools · Full IAM · Feishu + Telegram 🔓** |
-| emp-jiade | JiaDe Wang | Admin | standard | Discord → SA Agent ✨ |
-| emp-chris | Chris Morgan | Admin | standard | DevOps Agent (shell + infra tools) |
-| emp-peter | Peter Wu | Manager | standard | Portal/Discord → Executive Agent ✨ |
-| emp-alex | Alex Rivera | Manager | standard | Product dept manager view |
-| emp-mike | Mike Johnson | Manager | standard | Sales dept manager · CRM tools |
-| emp-ryan | Ryan Park | Employee | standard | Slack/Discord → SDE Agent (shell/code) |
-| emp-carol | Carol Zhang | Employee | standard | Telegram → Finance Agent |
-| emp-david | David Park | Employee | standard | Slack → Finance Agent ✨ |
-| **emp-admin** | **Demo Admin** | **Employee** | **exec-agent** | **Unrestricted test account · All tools · install_skill** |
+| Employee ID | Name | Role | Position | Dept | Runtime Tier | Channels |
+|-------------|------|------|----------|------|-------------|----------|
+| **emp-jiade** | **JiaDe Wang** | **admin** | Solutions Architect | Engineering | Executive | Discord, Slack |
+| **emp-chris** | **Chris Morgan** | **admin** | DevOps Engineer | Platform Team | Engineering | Slack, Telegram |
+| emp-alex | Alex Rivera | manager | Product Manager | Product | Standard | Slack |
+| emp-mike | Mike Johnson | manager | Account Executive | Enterprise Sales | Standard | WhatsApp, Slack |
+| emp-jenny | Jenny Liu | manager | HR Specialist | HR & Admin | Standard | Slack |
+| emp-peter | Peter Wu | employee | Executive | Engineering | Executive | Discord |
+| emp-ryan | Ryan Park | employee | Software Engineer | Backend Team | Engineering | Slack, Discord |
+| emp-carol | Carol Zhang | employee | Finance Analyst | Finance | Restricted | Slack, Telegram |
+| emp-rachel | Rachel Li | employee | Legal Counsel | Legal & Compliance | Restricted | Slack |
+| emp-emma | Emma Chen | employee | Customer Success Manager | Customer Success | Standard | Slack, WhatsApp |
+| emp-marcus | Marcus Bell | employee | Solutions Architect | Engineering | Executive | Slack, Telegram |
+| emp-sophie | Sophie Turner | employee | Software Engineer | Backend Team | Engineering | Slack |
+| emp-nathan | Nathan Brooks | employee | Software Engineer | Frontend Team | Engineering | Slack |
+| emp-lisa | Lisa Chen | employee | DevOps Engineer | Platform Team | Engineering | Slack |
+| emp-tony | Tony Reed | employee | QA Engineer | QA Team | Engineering | Slack |
+| emp-sarah | Sarah Kim | employee | Account Executive | Enterprise Sales | Standard | WhatsApp |
+| emp-tom | Tom Wilson | employee | Account Executive | SMB Sales | Standard | Slack |
+| emp-priya | Priya Patel | employee | Product Manager | Product | Standard | Slack, Discord |
+| emp-david | David Park | employee | Finance Analyst | Finance | Restricted | Slack |
+| emp-daniel | Daniel Kim | employee | Solutions Architect | Engineering | Executive | Slack |
 
-> 🔓 = No tool restrictions · ✨ = Cross-session memory via S3
+**Runtime tier assignment** (via Security Center → Position → Runtime mapping):
+- **Executive**: Solutions Architect (pos-sa)
+- **Engineering**: Software Engineer (pos-sde), DevOps Engineer (pos-devops), QA Engineer (pos-qa)
+- **Restricted**: Finance Analyst (pos-fa), Legal Counsel (pos-legal)
+- **Standard**: Account Executive (pos-ae), Product Manager (pos-pm), HR Specialist (pos-hr), Customer Success Manager (pos-csm), Executive (pos-exec)
 
 ## Environment Variables
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `ADMIN_PASSWORD` | Yes | Initial password for all accounts. Employees must set a personal password on first login. Stored in SSM SecureString. |
-| `JWT_SECRET` | Yes | JWT signing key. Generate: `openssl rand -hex 32` |
-| `AWS_REGION` | Yes | Deployment region for EC2, SSM, ECR, AgentCore (default: `us-east-1`) |
-| `GATEWAY_INSTANCE_ID` | Yes | EC2 instance ID — required for always-on container start/stop via SSM. Set in `/etc/openclaw/env`. Falls back to IMDSv2 if not set. |
-| `PUBLIC_URL` | No | Base URL for Digital Twin links (default: `https://openclaw.awspsa.com`) — **set this** for correct twin URLs |
-| `AGENT_ECR_IMAGE` | No | ECR image URI for always-on containers. Auto-built from `$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/$STACK_NAME-multitenancy-agent:latest` if not set. |
-| `CONSOLE_PORT` | No | Admin Console port (default: `8099`) |
-| `TENANT_ROUTER_URL` | No | Tenant Router URL (default: `http://localhost:8090`) |
-| `DYNAMODB_TABLE` | No | Table name — **must equal STACK_NAME** (IAM policy scoped to `table/${StackName}`). Default: same as STACK_NAME |
-| `DYNAMODB_REGION` | No | DynamoDB region if different from `AWS_REGION` (default: `us-east-2`) |
+### .env (deploy.sh input)
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `STACK_NAME` | Yes | `openclaw-enterprise` | Names ALL AWS resources. Unique per account/region. |
+| `REGION` | Yes | `us-east-1` | AWS region (must have Bedrock + AgentCore: `us-east-1` or `us-west-2`) |
+| `ADMIN_PASSWORD` | Yes | — | Initial password for all accounts. Stored in SSM SecureString. Employees must change on first login. |
+| `JWT_SECRET` | No | auto-generated | JWT signing key. Auto-generated with `openssl rand -hex 32` if empty. |
+| `MODEL` | No | `global.amazon.nova-2-lite-v1:0` | Default Bedrock model ID for standard agents |
+| `INSTANCE_TYPE` | No | `c7g.large` | EC2 Graviton ARM instance type |
+| `KEY_PAIR` | No | — | EC2 key pair name for emergency SSH |
+| `EXISTING_VPC_ID` | No | — | Reuse existing VPC instead of creating new |
+| `EXISTING_SUBNET_ID` | No | — | Reuse existing subnet |
+| `CREATE_VPC_ENDPOINTS` | No | `false` | Add Bedrock/SSM VPC endpoints (~$22/mo) |
+| `DYNAMODB_TABLE` | No | same as STACK_NAME | Table name — **must equal STACK_NAME** (IAM policy scoped to `table/${StackName}`) |
+| `DYNAMODB_REGION` | No | `us-east-2` | DynamoDB region if different from `REGION` |
+| `WORKSPACE_BUCKET_NAME` | No | auto | S3 bucket name — set if multi-stack same account |
+| `SKIP_DOCKER_BUILD` | No | `false` | Skip Docker build step (use existing image) |
+| `SKIP_SEED` | No | `false` | Skip DynamoDB seeding |
+
+### Runtime variables (written to /etc/openclaw/env by deploy.sh)
+
+| Variable | Description |
+|----------|-------------|
+| `PUBLIC_URL` | Base URL for Digital Twin links — **set this** for correct twin URLs |
+| `GATEWAY_INSTANCE_ID` | EC2 instance ID for always-on container management. Falls back to IMDSv2. |
+| `CONSOLE_PORT` | Admin Console port (default: `8099`) |
+| `TENANT_ROUTER_URL` | Tenant Router URL (default: `http://localhost:8090`) |
+| `ECS_CLUSTER_NAME` | ECS cluster for Fargate always-on agents |
+| `ECS_TASK_DEFINITION` | Fargate task definition ARN |
+| `ECS_SUBNET_ID` | Subnet for Fargate tasks |
+| `ECS_TASK_SG_ID` | Security group for Fargate tasks |
 
 ## Sample Organization
 
 | | Count | Details |
 |-|-------|---------|
-| Departments | 7 | Engineering, Sales, Finance, HR, Product, Legal, Executive |
+| Departments | 13 | 5 Engineering (Platform/Backend/Frontend/QA), 3 Sales (Enterprise/SMB), Product, Finance, HR, CS, Legal |
 | Positions | 11 | SA, SDE, DevOps, QA, AE, PM, FA, HR, CSM, Legal, Executive |
-| Employees | 20+ | Each with workspace files in S3 |
-| Agents | 20+ | Serverless (default) + always-on (admin toggle) |
+| Employees | 20 | 2 admin, 3 manager, 15 employee — each with workspace files in S3 |
+| Agents | 20 | 1:1 bound to employees, serverless (default) + always-on (admin toggle) |
 | Runtimes | 4 | Standard, Restricted, Engineering, Executive (per-tier model + IAM + guardrail) |
-| IM Channels | 4 | Telegram, Feishu, Discord, Portal |
-| Skills | 5+ | Role-scoped skill packages in S3 |
-| Knowledge Docs | 11 | Topic KBs + company-directory.md (org directory, auto-assigned to all positions) |
+| IM Channels | 4 | Slack (most employees), Discord, Telegram, WhatsApp |
+| Skills | 5 | S3-based skill packages (jina-reader, deep-research, etc.) |
+| Knowledge Docs | 11 | Topic KBs (org-directory, policies, onboarding, arch, runbooks, finance, HR) |
 | SOUL Templates | 12 | 1 global + 11 position-specific |
-| RBAC Roles | 3 | Admin, Manager, Employee |
+| RBAC Roles | 3 | Admin (2), Manager (3), Employee (15) |
+| Seed Scripts | 11 | seed_dynamodb, seed_roles, seed_settings, seed_knowledge, seed_skills, etc. |
 
 ## Cost Estimate
 
@@ -964,7 +999,7 @@ enterprise/
 │       ├── auth.py                 # JWT auth + UserContext
 │       ├── db.py                   # DynamoDB single-table + Digital Twin CRUD
 │       ├── password.py             # bcrypt password hashing
-│       ├── routers/                # 16 domain routers (130+ API endpoints)
+│       ├── routers/                # 17 domain routers (130+ API endpoints)
 │       │   ├── org.py agents.py bindings.py knowledge.py
 │       │   ├── portal.py playground.py monitor.py audit.py
 │       │   ├── usage.py settings.py security.py
@@ -973,12 +1008,24 @@ enterprise/
 │       │   └── __init__.py
 │       └── seed_*.py               # Sample data scripts
 ├── agent-container/                # AgentCore Docker image (OpenClaw 2026.3.24)
-│   ├── server.py                   # Workspace assembly + twin/always-on detection
-│   ├── workspace_assembler.py      # 3-layer SOUL merge + KB injection
+│   ├── Dockerfile                  # Pinned openclaw@2026.3.24 + 4 skills
+│   ├── server.py                   # HTTP server: workspace assembly + invocation + usage tracking
+│   ├── entrypoint.sh               # Container startup: SSM registration, IM auto-connect
+│   ├── workspace_assembler.py      # 3-layer SOUL merge + KB injection + identity
 │   ├── permissions.py              # SSM permission profiles (base_id extraction)
+│   ├── skill_loader.py             # DynamoDB role lookup → skill filtering
+│   ├── identity.py                 # Employee identity injection
+│   ├── memory.py                   # Per-turn memory checkpoint
+│   ├── observability.py            # CloudWatch metrics
+│   ├── safety.py                   # Guardrail enforcement
+│   ├── openclaw.json               # Agent config (deny built-in cron/gateway)
 │   └── skills/                     # Enterprise skills (eventbridge-cron, etc.)
 ├── exec-agent/                     # Executive tier Docker image
-│   └── Dockerfile                  # All skills pre-installed, Sonnet 4.6
+│   ├── Dockerfile                  # Pinned openclaw@2026.3.24 + 20 skills, Sonnet 4.6
+│   └── openclaw.json               # Executive config (full tool permissions)
+├── auth-agent/                     # Permission/approval agent
+│   ├── server.py                   # Approval workflow HTTP server
+│   └── permission_request.py       # Permission request handler
 ├── gateway/
 │   ├── bedrock_proxy_h2.js         # H2 Proxy (channel detection, pairing intercept)
 │   └── tenant_router.py            # 3-tier routing + always-on container support
