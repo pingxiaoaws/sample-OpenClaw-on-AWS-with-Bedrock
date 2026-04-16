@@ -137,6 +137,8 @@ For detailed compute isolation comparison across runtimes (AgentCore vs ECS vs E
 > **Try the Digital Twin:** Login as any employee → Portal → My Profile → Toggle **Digital Twin** ON → get a public URL → open it in an incognito window and chat with the AI version of that employee.
 >
 > Need a demo account? Contact [wjiad@aws](mailto:wjiad@amazon.com) to get access.
+>
+> **Interactive UI Guide:** [ui-guide.html](https://aws-samples.github.io/sample-OpenClaw-on-AWS-with-Bedrock/ui-guide.html) — 25-page bilingual (EN/CN) documentation covering architecture, deployment, every admin and portal page, with screenshots.
 
 ### Screenshots
 
