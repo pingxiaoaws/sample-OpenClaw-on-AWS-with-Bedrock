@@ -120,8 +120,9 @@ MIRROR_IMAGES=(
   "registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.3.10|agent-sandbox/agent-sandbox-controller:v0.3.10"
 
   # ── LiteLLM (optional: enable_litellm) ──
-  "docker.litellm.ai/berriai/litellm:main-latest|berriai/litellm:main-latest"
-  "docker.io/bitnami/postgresql:latest|bitnami/postgresql:latest"
+  "ghcr.io/berriai/litellm:main-latest|berriai/litellm:main-latest"              # enable_db=false (default)
+  "ghcr.io/berriai/litellm-database:main-latest|berriai/litellm-database:main-latest"  # enable_db=true
+  "docker.io/bitnami/postgresql:latest|bitnami/postgresql:latest"               # enable_db=true only
 
   # ── Monitoring stack (optional: enable_monitoring) ──
   # Grafana
